@@ -1,207 +1,70 @@
-
-import mediapipe as mp # Import mediapipe
-import cv2 # Import opencv
-import csv
-import os
+import mediapipe as mp
+import cv2
 import numpy as np
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import make_pipeline 
-from sklearn.preprocessing import StandardScaler 
-
-from sklearn.linear_model import LogisticRegression, RidgeClassifier
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.metrics import accuracy_score # Accuracy metrics 
-import pickle 
 import time
+import torch
 
-import sys
-print(sys.executable)
-
+# Mediapipe
 mp_drawing = mp.solutions.drawing_utils
-mp_pose = mp.solutions.pose
-mp_holistic = mp.solutions.holistic
-mp_drawing_styles = mp.solutions.drawing_styles
+mp_hands = mp.solutions.hands
 
-def load_model(self, model_path):
-    try:
-        with open(model_path, 'rb') as f:
-            model = pickle.load(f)
-        return model
-    except FileNotFoundError:
-        print(f"Error: '{model_path}' 파일을 찾을 수 없습니다.")
-        exit()
+# YOLOv5 모델 로드
+# torch.hub에서 YOLOv5 모델을 다운로드하거나 로드
+model = torch.hub.load('ultralytics/yolov5', 'yolov5s')  # YOLOv5s 모델 사용
+model.classes = [0]  # 'person' 클래스만 사용 (손을 특정하려면 커스텀 모델 필요)
 
-def calculate_angle(a, b, c):
-    a = np.array(a)
-    b = np.array(b)
-    c = np.array(c)
-    ba = a - b
-    bc = c - b
-    cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-    angle = np.degrees(np.arccos(np.clip(cosine_angle, -1.0, 1.0)))
-    return angle
-
-
+def detect_hands_with_yolo(image):
+    """
+    YOLO를 사용하여 손 탐지
+    """
+    results = model(image)
+    detections = results.xyxy[0].cpu().numpy()  # 바운딩 박스 좌표
+    hands = []
+    for *box, conf, cls in detections:
+        # YOLO의 바운딩 박스 좌표
+        x_min, y_min, x_max, y_max = map(int, box)
+        hands.append((x_min, y_min, x_max, y_max))
+    return hands
 
 def run():
-    cap = cv2.VideoCapture(0)
-    # Curl counter variables
-    warning = False
-    count = 0
-    good_count = 0
-    stretch_count = 0
-    stand_count = 0
-    start = time.gmtime(time.time())     # 시작 시간 저장
-
-    # Initiate holistic model
-    with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
-        
+    cap = cv2.VideoCapture(0)  # 웹캠 입력
+    with mp_hands.Hands(min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
         while cap.isOpened():
             ret, frame = cap.read()
-            resize_frame = cv2.resize(frame ,None, fx=1.5, fy=1.5, interpolation=cv2.INTER_LINEAR) 
-            
-            # Recolor Feed
-            image = cv2.cvtColor(resize_frame, cv2.COLOR_BGR2RGB)
-            image.flags.writeable = False        
-            
-            # Make Detections
-            results = holistic.process(image)
-            # print(results.face_landmarks)
-            
-            # face_landmarks, pose_landmarks, left_hand_landmarks, right_hand_landmarks
-            
-            # Recolor image back to BGR for rendering
-            image.flags.writeable = True   
-            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-            
-            # 1. Draw face landmarks
-            mp_drawing.draw_landmarks(image, results.face_landmarks, mp_holistic.FACEMESH_CONTOURS, 
-                                     mp_drawing.DrawingSpec(color=(80,110,10), thickness=1, circle_radius=1),
-                                     mp_drawing.DrawingSpec(color=(80,256,121), thickness=1, circle_radius=1)
-                                     )
-            
-            # 2. Right hand
-            mp_drawing.draw_landmarks(image, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS, 
-                                     mp_drawing.DrawingSpec(color=(80,22,10), thickness=2, circle_radius=4),
-                                     mp_drawing.DrawingSpec(color=(80,44,121), thickness=2, circle_radius=2)
-                                     )
+            if not ret:
+                print("카메라 입력을 읽을 수 없습니다.")
+                break
 
-            # 3. Left Hand
-            mp_drawing.draw_landmarks(image, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS, 
-                                     mp_drawing.DrawingSpec(color=(121,22,76), thickness=2, circle_radius=4),
-                                     mp_drawing.DrawingSpec(color=(121,44,250), thickness=2, circle_radius=2)
-                                     )
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            detected_hands = detect_hands_with_yolo(frame_rgb)  # YOLO로 손 탐지
 
-            # 4. Pose Detections
-            mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS, 
-                                     mp_drawing.DrawingSpec(color=(245,117,66), thickness=2, circle_radius=4),
-                                     mp_drawing.DrawingSpec(color=(245,66,230), thickness=2, circle_radius=2)
-                                     )
-            # Export coordinates
-            try:
-                landmarks = results.pose_landmarks.landmark
-                
-                # Get coordinates
-                left_shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
-                right_shoulder = [landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x,landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y]
-                
-                # Calculate angle
-                angle = calculate_angle(left_shoulder, right_shoulder)
+            for (x_min, y_min, x_max, y_max) in detected_hands:
+                # 탐지된 손 영역을 Crop
+                hand_image = frame_rgb[y_min:y_max, x_min:x_max]
 
-                # Curl counter logic
-                if angle < 175 or body_language_class.split(' ')[0] == 'Bad':
-                    count = count + 1
-                    good_count = 0   
-                    
-                elif angle >= 175:
-                    good_count = good_count + 1
+                # Mediapipe로 손 랜드마크 분석
+                results = hands.process(hand_image)
+                if results.multi_hand_landmarks:
+                    for hand_landmarks in results.multi_hand_landmarks:
+                        # 랜드마크를 Crop된 이미지가 아닌 원본 프레임에 그리기
+                        mp_drawing.draw_landmarks(
+                            frame,
+                            hand_landmarks,
+                            mp_hands.HAND_CONNECTIONS,
+                            mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+                            mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=2)
+                        )
+                        # 손 바운딩 박스 표시
+                        cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (255, 0, 0), 2)
 
-                # Extract Pose landmarks
-                pose = results.pose_landmarks.landmark
-                pose_row = list(np.array([[landmark.x, landmark.y, landmark.z, landmark.visibility] for landmark in pose]).flatten())
-                
-                # Extract Face landmarks
-                face = results.face_landmarks.landmark
-                face_row = list(np.array([[landmark.x, landmark.y, landmark.z, landmark.visibility] for landmark in face]).flatten())
-                
-                # Concate rows
-                row = pose_row+face_row
-
-                # Make Detections
-                X = pd.DataFrame([row])
-                body_language_class = model.predict(X)[0]
-                body_language_prob = model.predict_proba(X)[0]
-
-                # Get status box
-                cv2.rectangle(image, (0,0), (1000, 80), (128,128,128), -1)
-                
-                #Time
-                now = time.gmtime(time.time())
-            
-                cv2.putText(image, 'Time', 
-                            (10,25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,0), 1, cv2.LINE_AA)
-                hour = now.tm_hour - start.tm_hour
-                minutes = abs(now.tm_min - start.tm_min)
-                cv2.putText(image, str(hour) +' : '+ str(minutes), 
-                            (10,65), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2, cv2.LINE_AA)
-
-                if minutes >= 5:
-                    if body_language_class.split(' ')[0] == 'Stand' and round(body_language_prob[np.argmax(body_language_prob)],2) > 0.5:
-                        stand_count += 1
-                    if stand_count < 30:
-                        cv2.putText(image, 'Please Stand UP', 
-                            (450,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 1, cv2.LINE_AA)
-                    else:
-                        cv2.putText(image, 'Great!!', 
-                                (450,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 1, cv2.LINE_AA)
-                        stand_count = 0
-                        count = 0
-                        stretch_count = 0
-                        good_count = 0
-                        start = time.gmtime(time.time())  
-                        time.sleep(0.1)
-                 
-                #Warning
-                if minutes < 5 and count > 10:
-                    if body_language_class.split(' ')[0] == 'Stretch' and round(body_language_prob[np.argmax(body_language_prob)],2) > 0.2:
-                        stretch_count += 1
-                        
-                    if good_count > 5 or stretch_count > 20:
-                        cv2.putText(image, 'Great!!', 
-                                (450,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 1, cv2.LINE_AA)
-                        count = 0
-                        stretch_count = 0
-                        good_count = 0
-                        time.sleep(0.5)
-                        
-                    else:
-                        cv2.putText(image, 'Please Straighten UP', 
-                                    (450,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 1, cv2.LINE_AA)  
-                        
-                # Display Class
-                cv2.putText(image, 'Status'
-                            , (150,25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1, cv2.LINE_AA)
-                cv2.putText(image, body_language_class.split(' ')[0]
-                            , (150,65), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-                
-                # Display Probability
-                cv2.putText(image, str(round(body_language_prob[np.argmax(body_language_prob)],2))
-                            , (280,65), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-                
-                cv2.putText(image, str(round(angle,2))
-                            , (850,50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-                
-            except:
-                pass
-                            
-            cv2.imshow('Raw Webcam Feed', image)
+            # 프레임 출력
+            cv2.imshow('YOLO + Mediapipe', frame)
 
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
+
     cap.release()
     cv2.destroyAllWindows()
-if __name__=="__main__":
+
+if __name__ == "__main__":
     run()
-
-
