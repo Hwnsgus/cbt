@@ -15,6 +15,9 @@ from sklearn.metrics import accuracy_score # Accuracy metrics
 import pickle 
 import time
 
+import sys
+print(sys.executable)
+
 mp_drawing = mp.solutions.drawing_utils
 mp_pose = mp.solutions.pose
 mp_holistic = mp.solutions.holistic
